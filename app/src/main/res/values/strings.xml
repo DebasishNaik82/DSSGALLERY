@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">DSS Gallery</string>
+    <string name="tab_photos">Photos</string>
+    <string name="tab_albums">Albums</string>
+    <string name="tab_favorites">Favorites</string>
+    <string name="tab_search">Search</string>
+    <string name="search_placeholder">Search filenames, captions, tags, albums…</string>
+    <string name="memories_title">Memories</string>
+    <string name="permission_title">Allow access to your photos</string>
+    <string name="permission_subtitle">To organize your memories, view albums, and display high-resolution photos, Gallery needs permission to access your media storage.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="select_specific_photos">Select specific photos…</string>
+    <string name="open_android_settings">Open Android Settings</string>
+    <string name="privacy_assurance">Your photos stay securely on your device. Zero cloud tracking.</string>
+    <string name="empty_library_title">No memories captured yet</string>
+    <string name="empty_library_subtitle">Your personal library is pristine and waiting. Capture a photo, pick from storage, or generate studio sample photography into MediaStore.</string>
+    <string name="photo_info_title">Photo Info</string>
+    <string name="exif_telemetry_subtitle">EXIF &amp; Telemetry</string>
+    <string name="settings_title">Settings</string>
+    <string name="delete_confirm_title">Delete media?</string>
+    <string name="delete_confirm_message">Selected items will be permanently removed from your device storage.</string>
+</resources>
