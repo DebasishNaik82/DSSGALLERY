@@ -2,19 +2,25 @@ package com.example.data.mediastore
 
 import android.Manifest
 import android.app.PendingIntent
+import android.app.RecoverableSecurityException
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.database.sqlite.SQLiteException
 import android.media.ExifInterface
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.data.local.PickedMediaEntity
 import com.example.model.ExifTelemetry
@@ -25,9 +31,13 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+private const val TAG = "MediaStoreDataSource"
 
 class MediaStoreDataSource(private val context: Context) {
 
@@ -158,17 +168,18 @@ class MediaStoreDataSource(private val context: Context) {
                 null,
                 sortOrder
             )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE)
-                val addedCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
-                val modCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
-                val takenCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
-                val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
-                val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+                val idCol = cursor.getColumnIndex(MediaStore.Images.Media._ID)
+                if (idCol == -1) return@use
+                val nameCol = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
+                val addedCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
+                val modCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
+                val takenCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
+                val widthCol = cursor.getColumnIndex(MediaStore.Images.Media.WIDTH)
+                val heightCol = cursor.getColumnIndex(MediaStore.Images.Media.HEIGHT)
+                val bucketIdCol = cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_ID)
+                val bucketNameCol = cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
                 val relPathCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH)
                 } else -1
@@ -179,16 +190,16 @@ class MediaStoreDataSource(private val context: Context) {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
                     val uri = ContentUris.withAppendedId(collection, id)
-                    val displayName = cursor.getString(nameCol) ?: "IMG_$id.jpg"
-                    val mimeType = cursor.getString(mimeCol) ?: "image/jpeg"
-                    val dateAddedSec = cursor.getLong(addedCol)
-                    val dateModSec = cursor.getLong(modCol)
-                    val dateTakenMs = cursor.getLong(takenCol)
-                    val size = cursor.getLong(sizeCol)
-                    val width = cursor.getInt(widthCol)
-                    val height = cursor.getInt(heightCol)
-                    val bucketId = cursor.getString(bucketIdCol) ?: "default"
-                    val bucketName = cursor.getString(bucketNameCol) ?: "Camera"
+                    val displayName = (if (nameCol != -1) cursor.getString(nameCol) else null) ?: "IMG_$id.jpg"
+                    val mimeType = (if (mimeCol != -1) cursor.getString(mimeCol) else null) ?: "image/jpeg"
+                    val dateAddedSec = if (addedCol != -1) cursor.getLong(addedCol) else 0L
+                    val dateModSec = if (modCol != -1) cursor.getLong(modCol) else dateAddedSec
+                    val dateTakenMs = if (takenCol != -1) cursor.getLong(takenCol) else 0L
+                    val size = if (sizeCol != -1) cursor.getLong(sizeCol) else 0L
+                    val width = if (widthCol != -1) cursor.getInt(widthCol) else 0
+                    val height = if (heightCol != -1) cursor.getInt(heightCol) else 0
+                    val bucketId = (if (bucketIdCol != -1) cursor.getString(bucketIdCol) else null) ?: "default"
+                    val bucketName = (if (bucketNameCol != -1) cursor.getString(bucketNameCol) else null) ?: "Camera"
                     val relPath = if (relPathCol != -1) {
                         cursor.getString(relPathCol) ?: "DCIM/$bucketName/"
                     } else {
@@ -221,6 +232,8 @@ class MediaStoreDataSource(private val context: Context) {
                     )
                 }
             }
+        }.onFailure { error ->
+            Log.e(TAG, "Failed to query images from MediaStore", error)
         }
         return items
     }
@@ -265,18 +278,19 @@ class MediaStoreDataSource(private val context: Context) {
                 null,
                 sortOrder
             )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
-                val addedCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
-                val modCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
-                val takenCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_TAKEN)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
-                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-                val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_ID)
-                val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+                val idCol = cursor.getColumnIndex(MediaStore.Video.Media._ID)
+                if (idCol == -1) return@use
+                val nameCol = cursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
+                val addedCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
+                val modCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+                val takenCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_TAKEN)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Video.Media.SIZE)
+                val widthCol = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
+                val heightCol = cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)
+                val durationCol = cursor.getColumnIndex(MediaStore.Video.Media.DURATION)
+                val bucketIdCol = cursor.getColumnIndex(MediaStore.Video.Media.BUCKET_ID)
+                val bucketNameCol = cursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
                 val relPathCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     cursor.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH)
                 } else -1
@@ -287,17 +301,17 @@ class MediaStoreDataSource(private val context: Context) {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
                     val uri = ContentUris.withAppendedId(collection, id)
-                    val displayName = cursor.getString(nameCol) ?: "VID_$id.mp4"
-                    val mimeType = cursor.getString(mimeCol) ?: "video/mp4"
-                    val dateAddedSec = cursor.getLong(addedCol)
-                    val dateModSec = cursor.getLong(modCol)
-                    val dateTakenMs = cursor.getLong(takenCol)
-                    val size = cursor.getLong(sizeCol)
-                    val width = cursor.getInt(widthCol)
-                    val height = cursor.getInt(heightCol)
-                    val duration = cursor.getLong(durationCol)
-                    val bucketId = cursor.getString(bucketIdCol) ?: "videos"
-                    val bucketName = cursor.getString(bucketNameCol) ?: "Movies"
+                    val displayName = (if (nameCol != -1) cursor.getString(nameCol) else null) ?: "VID_$id.mp4"
+                    val mimeType = (if (mimeCol != -1) cursor.getString(mimeCol) else null) ?: "video/mp4"
+                    val dateAddedSec = if (addedCol != -1) cursor.getLong(addedCol) else 0L
+                    val dateModSec = if (modCol != -1) cursor.getLong(modCol) else dateAddedSec
+                    val dateTakenMs = if (takenCol != -1) cursor.getLong(takenCol) else 0L
+                    val size = if (sizeCol != -1) cursor.getLong(sizeCol) else 0L
+                    val width = if (widthCol != -1) cursor.getInt(widthCol) else 0
+                    val height = if (heightCol != -1) cursor.getInt(heightCol) else 0
+                    val duration = if (durationCol != -1) cursor.getLong(durationCol) else 0L
+                    val bucketId = (if (bucketIdCol != -1) cursor.getString(bucketIdCol) else null) ?: "videos"
+                    val bucketName = (if (bucketNameCol != -1) cursor.getString(bucketNameCol) else null) ?: "Movies"
                     val relPath = if (relPathCol != -1) {
                         cursor.getString(relPathCol) ?: "Movies/$bucketName/"
                     } else {
@@ -330,6 +344,8 @@ class MediaStoreDataSource(private val context: Context) {
                     )
                 }
             }
+        }.onFailure { error ->
+            Log.e(TAG, "Failed to query videos from MediaStore", error)
         }
         return items
     }
@@ -939,12 +955,449 @@ class MediaStoreDataSource(private val context: Context) {
         return deleteMediaItemsWithResult(items).intentSender
     }
 
-    suspend fun renameMedia(uri: Uri, newName: String) = withContext(Dispatchers.IO) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = android.content.ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, newName)
+    /**
+     * Validates a target filename and preserves the original file extension.
+     */
+    fun validateAndSanitizeFilename(
+        rawInput: String,
+        originalDisplayName: String
+    ): Result<String> {
+        val trimmedInput = rawInput.trim()
+        if (trimmedInput.isEmpty()) {
+            return Result.failure(IllegalArgumentException("File name cannot be empty"))
+        }
+
+        val lastDot = originalDisplayName.lastIndexOf('.')
+        val originalExtension = if (lastDot > 0 && lastDot < originalDisplayName.length - 1) {
+            originalDisplayName.substring(lastDot + 1)
+        } else {
+            ""
+        }
+
+        val rawBaseName = if (originalExtension.isNotEmpty() &&
+            trimmedInput.endsWith(".$originalExtension", ignoreCase = true)
+        ) {
+            trimmedInput.dropLast(originalExtension.length + 1).trim()
+        } else {
+            trimmedInput
+        }
+
+        if (rawBaseName.isEmpty()) {
+            return Result.failure(IllegalArgumentException("File name cannot be empty"))
+        }
+        if (rawBaseName == "." || rawBaseName == "..") {
+            return Result.failure(IllegalArgumentException("Invalid file name"))
+        }
+        if (rawBaseName.length > 200) {
+            return Result.failure(IllegalArgumentException("File name is too long"))
+        }
+
+        val forbiddenChars = charArrayOf('/', '\\', ':', '*', '?', '"', '<', '>', '|', '\u0000')
+        if (rawBaseName.any { ch -> ch in forbiddenChars || ch.code < 32 }) {
+            return Result.failure(
+                IllegalArgumentException("File name contains invalid characters (\\ / : * ? \" < > |)")
+            )
+        }
+
+        val sanitizedFullName = if (originalExtension.isNotEmpty()) {
+            "$rawBaseName.$originalExtension"
+        } else {
+            rawBaseName
+        }
+
+        return Result.success(sanitizedFullName)
+    }
+
+    private fun isPhotoPickerUri(uri: Uri): Boolean {
+        val path = uri.path.orEmpty()
+        val authority = uri.authority.orEmpty()
+        return path.startsWith("/picker") ||
+            path.contains("/picker/") ||
+            authority.contains("photopicker", ignoreCase = true)
+    }
+
+    private fun hasDuplicateInSameDirectory(
+        item: MediaItem,
+        targetDisplayName: String
+    ): Boolean {
+        val uri = item.uri
+        if (uri.scheme == ContentResolver.SCHEME_FILE) {
+            val file = uri.path?.let { File(it) } ?: return false
+            val parent = file.parentFile ?: return false
+            val siblings = parent.listFiles() ?: return false
+            return siblings.any { sibling ->
+                sibling.name.equals(targetDisplayName, ignoreCase = true) &&
+                    sibling.absolutePath != file.absolutePath
             }
-            contentResolver.update(uri, values, null, null)
+        }
+
+        if (!isStandardMediaStoreUri(uri)) {
+            return false
+        }
+
+        val collection = if (item.isVideo) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            } else {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+        }
+
+        var currentBucketId: String? = item.bucketId.takeIf { it.isNotBlank() }
+        var currentRelativePath: String? = null
+        var currentDataPath: String? = null
+
+        val itemProj = mutableListOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.BUCKET_ID
+        ).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.MediaColumns.RELATIVE_PATH)
+            } else {
+                @Suppress("DEPRECATION")
+                add(MediaStore.MediaColumns.DATA)
+            }
+        }.toTypedArray()
+
+        runCatching {
+            contentResolver.query(uri, itemProj, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val bIdx = c.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID)
+                    if (bIdx != -1) currentBucketId = c.getString(bIdx) ?: currentBucketId
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val rIdx = c.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                        if (rIdx != -1) currentRelativePath = c.getString(rIdx)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        val dIdx = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+                        if (dIdx != -1) currentDataPath = c.getString(dIdx)
+                    }
+                }
+            }
+        }
+
+        if (!currentDataPath.isNullOrBlank()) {
+            val oldFile = File(currentDataPath!!)
+            val parent = oldFile.parentFile
+            if (parent != null && parent.exists()) {
+                val targetFile = File(parent, targetDisplayName)
+                if (targetFile.exists() && !targetFile.absolutePath.equals(oldFile.absolutePath, ignoreCase = false)) {
+                    return true
+                }
+            }
+        }
+
+        val currentId = runCatching { ContentUris.parseId(uri) }.getOrDefault(item.id)
+        val selectionBuilder = StringBuilder("${MediaStore.MediaColumns._ID} != ?")
+        val args = mutableListOf(currentId.toString())
+
+        if (!currentRelativePath.isNullOrBlank() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            selectionBuilder.append(" AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?")
+            args.add(currentRelativePath!!)
+        } else if (!currentBucketId.isNullOrBlank()) {
+            selectionBuilder.append(" AND ${MediaStore.MediaColumns.BUCKET_ID} = ?")
+            args.add(currentBucketId!!)
+        }
+
+        return runCatching {
+            contentResolver.query(
+                collection,
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME),
+                selectionBuilder.toString(),
+                args.toTypedArray(),
+                null
+            )?.use { cursor ->
+                val nameCol = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                if (nameCol == -1) return@use false
+                while (cursor.moveToNext()) {
+                    val existingName = cursor.getString(nameCol) ?: continue
+                    if (existingName.equals(targetDisplayName, ignoreCase = true)) {
+                        return@use true
+                    }
+                }
+                false
+            } ?: false
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Safely renames a photo or video across Android 7–15+ without crashing or losing the original file.
+     * - Validates filenames and preserves original file extensions.
+     * - Prevents duplicate filenames in the same directory.
+     * - Uses MediaStore APIs for Scoped Storage (Android 10+) and requests user consent when required.
+     * - Handles Android <= 9 legacy storage safely with rollback if MediaStore update fails.
+     */
+    suspend fun renameMediaSafely(
+        item: MediaItem,
+        newName: String
+    ): MediaStoreRenameResult = withContext(Dispatchers.IO) {
+        val validation = validateAndSanitizeFilename(newName, item.displayName)
+        val sanitizedName = validation.getOrElse { error ->
+            return@withContext MediaStoreRenameResult.Failure(
+                error.message ?: "Invalid file name"
+            )
+        }
+
+        if (sanitizedName == item.displayName) {
+            return@withContext MediaStoreRenameResult.Failure("Please enter a different file name")
+        }
+
+        val uri = item.uri
+        if (isPhotoPickerUri(uri)) {
+            return@withContext MediaStoreRenameResult.Failure(
+                "Items added via Photo Picker are read-only and cannot be renamed"
+            )
+        }
+
+        if (hasDuplicateInSameDirectory(item, sanitizedName)) {
+            return@withContext MediaStoreRenameResult.Failure(
+                "A file named \"$sanitizedName\" already exists in this folder"
+            )
+        }
+
+        // Case 1: file:// URI
+        if (uri.scheme == ContentResolver.SCHEME_FILE) {
+            val oldPath = uri.path
+            if (oldPath.isNullOrBlank()) {
+                return@withContext MediaStoreRenameResult.Failure("Invalid file path")
+            }
+            return@withContext try {
+                val oldFile = File(oldPath)
+                if (!oldFile.exists()) {
+                    return@withContext MediaStoreRenameResult.Failure("Original file not found on storage")
+                }
+                val parent = oldFile.parentFile
+                    ?: return@withContext MediaStoreRenameResult.Failure("Cannot resolve parent directory")
+                val targetFile = File(parent, sanitizedName)
+                if (targetFile.exists()) {
+                    return@withContext MediaStoreRenameResult.Failure(
+                        "A file named \"$sanitizedName\" already exists in this folder"
+                    )
+                }
+                if (!oldFile.renameTo(targetFile)) {
+                    return@withContext MediaStoreRenameResult.Failure(
+                        "Permission denied or unable to rename file"
+                    )
+                }
+                runCatching {
+                    MediaScannerConnection.scanFile(
+                        context,
+                        arrayOf(oldFile.absolutePath, targetFile.absolutePath),
+                        null,
+                        null
+                    )
+                }
+                MediaStoreRenameResult.Success(
+                    newUri = Uri.fromFile(targetFile),
+                    newDisplayName = sanitizedName,
+                    newRelativePath = targetFile.absolutePath,
+                    newModifiedMillis = System.currentTimeMillis()
+                )
+            } catch (e: SecurityException) {
+                Log.e(TAG, "SecurityException renaming file:// URI: $uri", e)
+                MediaStoreRenameResult.Failure("Permission denied to rename this file")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed renaming file:// URI: $uri", e)
+                MediaStoreRenameResult.Failure("Failed to rename file: ${e.localizedMessage ?: "Unknown error"}")
+            }
+        }
+
+        // Case 2: Non-MediaStore content:// URI (e.g., SAF DocumentProvider)
+        if (!isStandardMediaStoreUri(uri)) {
+            return@withContext try {
+                if (DocumentsContract.isDocumentUri(context, uri)) {
+                    val renamedUri = DocumentsContract.renameDocument(contentResolver, uri, sanitizedName)
+                    if (renamedUri != null) {
+                        MediaStoreRenameResult.Success(
+                            newUri = renamedUri,
+                            newDisplayName = sanitizedName,
+                            newRelativePath = item.relativePath.substringBeforeLast('/') + "/$sanitizedName",
+                            newModifiedMillis = System.currentTimeMillis()
+                        )
+                    } else {
+                        MediaStoreRenameResult.Failure("This file provider did not allow renaming")
+                    }
+                } else {
+                    MediaStoreRenameResult.Failure("External or read-only file cannot be renamed here")
+                }
+            } catch (e: SecurityException) {
+                Log.w(TAG, "SecurityException renaming external document URI: $uri", e)
+                MediaStoreRenameResult.Failure("Permission denied to rename this external file")
+            } catch (e: Exception) {
+                Log.w(TAG, "Unsupported rename on external URI: $uri", e)
+                MediaStoreRenameResult.Failure("This file cannot be renamed in its current location")
+            }
+        }
+
+        // Case 3: Standard MediaStore URI
+        if (checkMediaStoreExistence(uri) == MediaExistence.DEFINITELY_NOT_FOUND) {
+            return@withContext MediaStoreRenameResult.Failure("File no longer exists on device")
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10 (API 29) and Android 11+ (API 30-36) Scoped Storage
+            try {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, sanitizedName)
+                }
+                val rowsUpdated = contentResolver.update(uri, values, null, null)
+                if (rowsUpdated > 0) {
+                    val updatedRelPath = buildUpdatedRelativePath(item.relativePath, sanitizedName)
+                    return@withContext MediaStoreRenameResult.Success(
+                        newUri = uri,
+                        newDisplayName = sanitizedName,
+                        newRelativePath = updatedRelPath,
+                        newModifiedMillis = System.currentTimeMillis()
+                    )
+                } else {
+                    return@withContext MediaStoreRenameResult.Failure("MediaStore could not rename this file")
+                }
+            } catch (securityException: SecurityException) {
+                Log.w(TAG, "SecurityException renaming MediaStore URI on API ${Build.VERSION.SDK_INT}: $uri", securityException)
+                val consentSender: IntentSender? = when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                        runCatching {
+                            MediaStore.createWriteRequest(contentResolver, listOf(uri)).intentSender
+                        }.getOrNull() ?: if (securityException is RecoverableSecurityException) {
+                            securityException.userAction.actionIntent.intentSender
+                        } else null
+                    }
+                    securityException is RecoverableSecurityException -> {
+                        securityException.userAction.actionIntent.intentSender
+                    }
+                    else -> null
+                }
+
+                return@withContext if (consentSender != null) {
+                    MediaStoreRenameResult.NeedsConsent(
+                        intentSender = consentSender,
+                        targetDisplayName = sanitizedName
+                    )
+                } else {
+                    MediaStoreRenameResult.Failure("Write permission denied to rename this file")
+                }
+            } catch (e: IllegalArgumentException) {
+                Log.e(TAG, "IllegalArgumentException renaming MediaStore URI: $uri", e)
+                return@withContext MediaStoreRenameResult.Failure(
+                    "Invalid file name or duplicate file in this folder"
+                )
+            } catch (e: SQLiteException) {
+                Log.e(TAG, "SQLiteException renaming MediaStore URI: $uri", e)
+                return@withContext MediaStoreRenameResult.Failure(
+                    "A file with this name already exists in this folder"
+                )
+            } catch (e: IOException) {
+                Log.e(TAG, "IOException renaming MediaStore URI: $uri", e)
+                return@withContext MediaStoreRenameResult.Failure(
+                    "Storage error while renaming file"
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error renaming MediaStore URI: $uri", e)
+                return@withContext MediaStoreRenameResult.Failure(
+                    "Unable to rename file: ${e.localizedMessage ?: "Unknown error"}"
+                )
+            }
+        } else {
+            // Android 9 (API 28) and below
+            val hasWritePerm = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasWritePerm) {
+                return@withContext MediaStoreRenameResult.Failure(
+                    "Storage write permission is required to rename files"
+                )
+            }
+
+            return@withContext try {
+                @Suppress("DEPRECATION")
+                val dataColumn = MediaStore.MediaColumns.DATA
+                val oldPath = contentResolver.query(uri, arrayOf(dataColumn), null, null, null)?.use { c ->
+                    val idx = c.getColumnIndex(dataColumn)
+                    if (idx != -1 && c.moveToFirst()) c.getString(idx) else null
+                }
+
+                if (oldPath.isNullOrBlank()) {
+                    return@withContext MediaStoreRenameResult.Failure("Unable to locate original file path")
+                }
+
+                val oldFile = File(oldPath)
+                if (!oldFile.exists()) {
+                    return@withContext MediaStoreRenameResult.Failure("Original file not found on storage")
+                }
+
+                val parentDir = oldFile.parentFile
+                    ?: return@withContext MediaStoreRenameResult.Failure("Invalid parent folder")
+                val targetFile = File(parentDir, sanitizedName)
+                if (targetFile.exists()) {
+                    return@withContext MediaStoreRenameResult.Failure(
+                        "A file named \"$sanitizedName\" already exists in this folder"
+                    )
+                }
+
+                if (!oldFile.renameTo(targetFile)) {
+                    return@withContext MediaStoreRenameResult.Failure("Could not rename file on storage")
+                }
+
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, sanitizedName)
+                    @Suppress("DEPRECATION")
+                    put(MediaStore.MediaColumns.DATA, targetFile.absolutePath)
+                }
+                val rowsUpdated = try {
+                    contentResolver.update(uri, values, null, null)
+                } catch (updateError: Exception) {
+                    Log.e(TAG, "MediaStore update failed after File.renameTo, rolling back", updateError)
+                    targetFile.renameTo(oldFile)
+                    return@withContext MediaStoreRenameResult.Failure(
+                        "Failed to update MediaStore record; original file preserved"
+                    )
+                }
+
+                if (rowsUpdated <= 0) {
+                    targetFile.renameTo(oldFile)
+                    return@withContext MediaStoreRenameResult.Failure(
+                        "Failed to update MediaStore record; original file preserved"
+                    )
+                }
+
+                runCatching {
+                    MediaScannerConnection.scanFile(
+                        context,
+                        arrayOf(targetFile.absolutePath),
+                        arrayOf(item.mimeType),
+                        null
+                    )
+                }
+
+                MediaStoreRenameResult.Success(
+                    newUri = uri,
+                    newDisplayName = sanitizedName,
+                    newRelativePath = buildUpdatedRelativePath(item.relativePath, sanitizedName),
+                    newModifiedMillis = System.currentTimeMillis()
+                )
+            } catch (e: SecurityException) {
+                Log.e(TAG, "SecurityException renaming legacy media URI: $uri", e)
+                MediaStoreRenameResult.Failure("Permission denied to rename this file")
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error renaming legacy media URI: $uri", e)
+                MediaStoreRenameResult.Failure("Unable to rename file: ${e.localizedMessage ?: "Unknown error"}")
+            }
+        }
+    }
+
+    private fun buildUpdatedRelativePath(oldRelativePath: String, newDisplayName: String): String {
+        val lastSlash = oldRelativePath.lastIndexOf('/')
+        return if (lastSlash >= 0) {
+            oldRelativePath.substring(0, lastSlash + 1) + newDisplayName
+        } else {
+            newDisplayName
         }
     }
 }
@@ -955,3 +1408,21 @@ data class MediaStoreDeleteResult(
     val failedUris: Set<String> = emptySet(),
     val intentSender: IntentSender? = null
 )
+
+sealed interface MediaStoreRenameResult {
+    data class Success(
+        val newUri: Uri,
+        val newDisplayName: String,
+        val newRelativePath: String,
+        val newModifiedMillis: Long
+    ) : MediaStoreRenameResult
+
+    data class NeedsConsent(
+        val intentSender: IntentSender,
+        val targetDisplayName: String
+    ) : MediaStoreRenameResult
+
+    data class Failure(
+        val errorMessage: String
+    ) : MediaStoreRenameResult
+}

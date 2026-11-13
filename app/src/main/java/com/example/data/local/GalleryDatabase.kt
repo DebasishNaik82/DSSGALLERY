@@ -160,10 +160,27 @@ interface GalleryDao {
 
     @Query("DELETE FROM recycle_bin WHERE deletedAtMillis < :threshold")
     suspend fun clearExpiredRecycleBinItems(threshold: Long)
+
+    // Rename Synchronization Helpers
+    @Query("UPDATE picked_media SET displayName = :newName WHERE uriString = :uriString")
+    suspend fun updatePickedMediaDisplayName(uriString: String, newName: String)
+
+    @Query("UPDATE recycle_bin SET displayName = :newName WHERE uriString = :uriString")
+    suspend fun updateRecycleBinDisplayName(uriString: String, newName: String)
+
+    @Query("UPDATE favorite_media SET uriString = :newUri WHERE uriString = :oldUri")
+    suspend fun updateFavoriteUri(oldUri: String, newUri: String)
+
+    @Query("UPDATE media_annotations SET uriString = :newUri WHERE uriString = :oldUri")
+    suspend fun updateAnnotationUri(oldUri: String, newUri: String)
+
+    @Query("UPDATE album_media_mappings SET uriString = :newUri WHERE uriString = :oldUri")
+    suspend fun updateAlbumMappingUri(oldUri: String, newUri: String)
 }
 
 @Database(
     entities = [
+        MediaEntity::class,
         FavoriteMediaEntity::class,
         MediaAnnotationEntity::class,
         CustomAlbumEntity::class,
@@ -172,12 +189,13 @@ interface GalleryDao {
         PickedMediaEntity::class,
         RecycleBinEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class GalleryDatabase : RoomDatabase() {
 
     abstract fun galleryDao(): GalleryDao
+    abstract fun mediaDao(): MediaDao
 
     companion object {
         @Volatile

@@ -24,11 +24,13 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -82,6 +85,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -213,8 +217,13 @@ fun PorcelainFloatingBottomBar(
                     Column(
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = 48.dp)
                             .clip(CircleShape)
-                            .clickable { onSelectTab(tab) }
+                            .selectable(
+                                selected = isSelected,
+                                role = Role.Tab,
+                                onClick = { onSelectTab(tab) }
+                            )
                             .padding(vertical = 4.dp)
                             .testTag(tab.testTag),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -257,6 +266,7 @@ fun ContextualSelectionActionBar(
     onFavoriteSelected: () -> Unit,
     onAddToAlbumSelected: () -> Unit,
     onDeleteSelected: () -> Unit,
+    onRenameSelected: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -337,6 +347,14 @@ fun ContextualSelectionActionBar(
                         onClick = onAddToAlbumSelected,
                         testTag = "selection_album_button"
                     )
+                    if (selectedCount == 1) {
+                        SelectionActionItem(
+                            icon = Icons.Filled.Edit,
+                            label = "Rename",
+                            onClick = onRenameSelected,
+                            testTag = "selection_rename_button"
+                        )
+                    }
                     SelectionActionItem(
                         icon = Icons.Filled.DeleteOutline,
                         label = "Delete",

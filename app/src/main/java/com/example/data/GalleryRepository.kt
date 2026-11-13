@@ -3,15 +3,21 @@ package com.example.data
 import android.content.Context
 import android.content.IntentSender
 import android.net.Uri
+import android.util.Log
 import com.example.data.local.AlbumMediaMappingEntity
 import com.example.data.local.CustomAlbumEntity
 import com.example.data.local.FavoriteMediaEntity
 import com.example.data.local.GalleryDao
 import com.example.data.local.MediaAnnotationEntity
+import com.example.data.local.MediaDao
+import com.example.data.local.MediaEntity
 import com.example.data.local.PickedMediaEntity
 import com.example.data.local.RecentSearchEntity
 import com.example.data.local.RecycleBinEntity
+import com.example.data.local.toMediaEntity
+import com.example.data.local.toMediaItem
 import com.example.data.mediastore.MediaStoreDataSource
+import com.example.data.mediastore.MediaStoreRenameResult
 import com.example.model.AlbumItem
 import com.example.model.ExifTelemetry
 import com.example.model.MediaItem
@@ -22,11 +28,13 @@ import com.example.model.SystemAlbumType
 import com.example.model.TimelineDayGroup
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,14 +44,29 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val REPO_TAG = "GalleryRepository"
+
+data class PendingRenameRequest(
+    val item: MediaItem,
+    val targetDisplayName: String
+)
+
+sealed interface RenameMediaOutcome {
+    data class Success(val newDisplayName: String) : RenameMediaOutcome
+    data object PendingConsent : RenameMediaOutcome
+    data class Error(val message: String) : RenameMediaOutcome
+}
+
+@OptIn(FlowPreview::class)
 class GalleryRepository(
     private val context: Context,
     private val mediaStoreDataSource: MediaStoreDataSource,
     private val galleryDao: GalleryDao,
+    private val mediaDao: MediaDao,
     externalScope: CoroutineScope
 ) {
-    private val rawDeviceMediaFlow = MutableStateFlow<List<MediaItem>>(emptyList())
     private val isLoadingFlow = MutableStateFlow(false)
+    private val refreshMutex = Mutex()
 
     private val deleteMutex = Mutex()
     private val pendingDeleteItemsFlow = MutableStateFlow<List<RecycleBinEntity>>(emptyList())
@@ -51,15 +74,25 @@ class GalleryRepository(
     private val deleteStatusMessageFlow = MutableStateFlow<String?>(null)
     private val isConsentDialogLaunched = AtomicBoolean(false)
 
+    private val renameMutex = Mutex()
+    private val pendingRenameRequestFlow = MutableStateFlow<PendingRenameRequest?>(null)
+    private val pendingRenameIntentSenderFlow = MutableStateFlow<IntentSender?>(null)
+    private val renameStatusMessageFlow = MutableStateFlow<String?>(null)
+    private val isRenameConsentDialogLaunched = AtomicBoolean(false)
+
     val isLoading: Flow<Boolean> = isLoadingFlow
     val pendingDeleteIntentSender: StateFlow<IntentSender?> = pendingDeleteIntentSenderFlow.asStateFlow()
     val deleteStatusMessage: StateFlow<String?> = deleteStatusMessageFlow.asStateFlow()
+    val pendingRenameIntentSender: StateFlow<IntentSender?> = pendingRenameIntentSenderFlow.asStateFlow()
+    val renameStatusMessage: StateFlow<String?> = renameStatusMessageFlow.asStateFlow()
 
     init {
         externalScope.launch(Dispatchers.IO) {
-            mediaStoreDataSource.observeMediaStoreChanges().collect {
-                refreshMediaStore()
-            }
+            mediaStoreDataSource.observeMediaStoreChanges()
+                .debounce(350L)
+                .collect {
+                    refreshMediaStore()
+                }
         }
         externalScope.launch(Dispatchers.IO) {
             val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
@@ -74,14 +107,28 @@ class GalleryRepository(
         mediaStoreDataSource.getRequiredPermissions()
 
     suspend fun refreshMediaStore() {
-        isLoadingFlow.value = true
-        try {
-            val deviceItems = mediaStoreDataSource.queryAllDeviceMedia()
-            rawDeviceMediaFlow.value = deviceItems
-        } finally {
-            isLoadingFlow.value = false
+        refreshMutex.withLock {
+            isLoadingFlow.value = true
+            try {
+                val deviceItems = mediaStoreDataSource.queryAllDeviceMedia()
+                mediaDao.syncMediaItems(deviceItems.map { it.toMediaEntity() })
+            } catch (e: Exception) {
+                Log.e(REPO_TAG, "Error refreshing MediaStore and syncing Room", e)
+            } finally {
+                isLoadingFlow.value = false
+            }
         }
     }
+
+    fun observeCachedImages(): Flow<List<MediaEntity>> = mediaDao.observeImages()
+
+    fun observeCachedVideos(): Flow<List<MediaEntity>> = mediaDao.observeVideos()
+
+    fun observeCachedMediaByAlbum(albumName: String): Flow<List<MediaEntity>> =
+        mediaDao.observeMediaByAlbum(albumName)
+
+    fun searchCachedMediaByFilename(query: String): Flow<List<MediaEntity>> =
+        mediaDao.searchMediaByFilename(query)
 
     private data class RoomMetadataSnapshot(
         val pickedEntities: List<PickedMediaEntity>,
@@ -108,9 +155,10 @@ class GalleryRepository(
     }
 
     val allMediaFlow: Flow<List<MediaItem>> = combine(
-        rawDeviceMediaFlow,
+        mediaDao.observeAllMedia(),
         roomMetadataFlow
-    ) { deviceMedia, roomData ->
+    ) { mediaEntities, roomData ->
+        val deviceMedia = mediaEntities.map { it.toMediaItem() }
         val recycleBinUris = roomData.recycleBinEntities.map { it.uriString }.toSet()
         val recycleBinIds = roomData.recycleBinEntities.map { it.mediaId }.toSet()
 
@@ -875,7 +923,111 @@ class GalleryRepository(
         deleteStatusMessageFlow.value = null
     }
 
-    suspend fun renameMedia(item: MediaItem, newName: String) {
-        mediaStoreDataSource.renameMedia(item.uri, newName)
+    suspend fun renameMedia(item: MediaItem, newName: String): RenameMediaOutcome {
+        return renameMutex.withLock {
+            when (val result = mediaStoreDataSource.renameMediaSafely(item, newName)) {
+                is MediaStoreRenameResult.Success -> {
+                    syncRenameInDatabase(item, result)
+                    renameStatusMessageFlow.value = "Renamed to ${result.newDisplayName}"
+                    refreshMediaStore()
+                    RenameMediaOutcome.Success(result.newDisplayName)
+                }
+                is MediaStoreRenameResult.NeedsConsent -> {
+                    isRenameConsentDialogLaunched.set(false)
+                    pendingRenameRequestFlow.value = PendingRenameRequest(
+                        item = item,
+                        targetDisplayName = result.targetDisplayName
+                    )
+                    pendingRenameIntentSenderFlow.value = result.intentSender
+                    RenameMediaOutcome.PendingConsent
+                }
+                is MediaStoreRenameResult.Failure -> {
+                    renameStatusMessageFlow.value = result.errorMessage
+                    RenameMediaOutcome.Error(result.errorMessage)
+                }
+            }
+        }
+    }
+
+    fun markRenameConsentDialogLaunched(sender: IntentSender): Boolean {
+        return pendingRenameIntentSenderFlow.value === sender &&
+            isRenameConsentDialogLaunched.compareAndSet(false, true)
+    }
+
+    suspend fun handleRenameConsentResult(approved: Boolean): RenameMediaOutcome {
+        return renameMutex.withLock {
+            val pending = pendingRenameRequestFlow.value
+            pendingRenameRequestFlow.value = null
+            pendingRenameIntentSenderFlow.value = null
+            isRenameConsentDialogLaunched.set(false)
+
+            if (pending == null) {
+                return@withLock RenameMediaOutcome.Error("No pending rename operation")
+            }
+            if (!approved) {
+                val msg = "Rename cancelled"
+                renameStatusMessageFlow.value = msg
+                return@withLock RenameMediaOutcome.Error(msg)
+            }
+
+            when (val retryResult = mediaStoreDataSource.renameMediaSafely(pending.item, pending.targetDisplayName)) {
+                is MediaStoreRenameResult.Success -> {
+                    syncRenameInDatabase(pending.item, retryResult)
+                    renameStatusMessageFlow.value = "Renamed to ${retryResult.newDisplayName}"
+                    refreshMediaStore()
+                    RenameMediaOutcome.Success(retryResult.newDisplayName)
+                }
+                is MediaStoreRenameResult.NeedsConsent -> {
+                    val msg = "Permission required to rename this file"
+                    renameStatusMessageFlow.value = msg
+                    RenameMediaOutcome.Error(msg)
+                }
+                is MediaStoreRenameResult.Failure -> {
+                    renameStatusMessageFlow.value = retryResult.errorMessage
+                    RenameMediaOutcome.Error(retryResult.errorMessage)
+                }
+            }
+        }
+    }
+
+    fun clearRenameStatusMessage() {
+        renameStatusMessageFlow.value = null
+    }
+
+    private suspend fun syncRenameInDatabase(
+        oldItem: MediaItem,
+        result: MediaStoreRenameResult.Success
+    ) {
+        val oldUriStr = oldItem.uri.toString()
+        val newUriStr = result.newUri.toString()
+        try {
+            if (oldUriStr == newUriStr) {
+                mediaDao.updateMediaRename(
+                    uriString = oldUriStr,
+                    newName = result.newDisplayName,
+                    newPath = result.newRelativePath,
+                    newRelativePath = result.newRelativePath,
+                    modifiedMillis = result.newModifiedMillis
+                )
+                galleryDao.updatePickedMediaDisplayName(oldUriStr, result.newDisplayName)
+                galleryDao.updateRecycleBinDisplayName(oldUriStr, result.newDisplayName)
+            } else {
+                mediaDao.deleteMediaByUri(oldUriStr)
+                val updatedItem = oldItem.copy(
+                    uri = result.newUri,
+                    displayName = result.newDisplayName,
+                    relativePath = result.newRelativePath,
+                    dateModifiedMillis = result.newModifiedMillis
+                )
+                mediaDao.insertMedia(updatedItem.toMediaEntity())
+                galleryDao.updateFavoriteUri(oldUriStr, newUriStr)
+                galleryDao.updateAnnotationUri(oldUriStr, newUriStr)
+                galleryDao.updateAlbumMappingUri(oldUriStr, newUriStr)
+                galleryDao.updatePickedMediaDisplayName(oldUriStr, result.newDisplayName)
+                galleryDao.updateRecycleBinDisplayName(oldUriStr, result.newDisplayName)
+            }
+        } catch (e: Exception) {
+            Log.e(REPO_TAG, "Failed to synchronize Room after rename", e)
+        }
     }
 }

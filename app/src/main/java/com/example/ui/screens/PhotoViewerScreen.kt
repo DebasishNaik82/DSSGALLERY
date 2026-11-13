@@ -38,11 +38,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -72,7 +72,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -130,14 +132,33 @@ fun PhotoViewerScreen(
         return
     }
 
-    val initialIndex = remember(mediaList, initialMediaUri) {
+    var activeMediaUri by rememberSaveable(initialMediaUri) { mutableStateOf(initialMediaUri) }
+
+    val initialIndex = remember(initialMediaUri) {
         mediaList.indexOfFirst { it.uri.toString() == initialMediaUri }.coerceAtLeast(0)
     }
 
     val pagerState = rememberPagerState(
-        initialPage = initialIndex,
+        initialPage = initialIndex.coerceIn(0, (mediaList.size - 1).coerceAtLeast(0)),
         pageCount = { mediaList.size }
     )
+
+    LaunchedEffect(pagerState, mediaList) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            mediaList.getOrNull(page)?.let { item ->
+                activeMediaUri = item.uri.toString()
+            }
+        }
+    }
+
+    LaunchedEffect(mediaList) {
+        val targetIndex = mediaList.indexOfFirst { it.uri.toString() == activeMediaUri }
+        if (targetIndex >= 0 && targetIndex != pagerState.currentPage && !pagerState.isScrollInProgress) {
+            pagerState.scrollToPage(targetIndex)
+        } else if (pagerState.currentPage >= mediaList.size && mediaList.isNotEmpty()) {
+            pagerState.scrollToPage(mediaList.lastIndex)
+        }
+    }
 
     val currentItem = mediaList.getOrNull(pagerState.currentPage) ?: mediaList.first()
     val exif = activeExif ?: ExifTelemetry()
@@ -148,6 +169,7 @@ fun PhotoViewerScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
     var showAssignAlbumDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     var moveModeSelected by remember { mutableStateOf(true) }
     var isCurrentPageZoomed by remember { mutableStateOf(false) }
 
@@ -193,18 +215,30 @@ fun PhotoViewerScreen(
     ) {
         HorizontalPager(
             state = pagerState,
+            key = { index -> mediaList.getOrNull(index)?.uri?.toString() ?: index },
+            beyondViewportPageCount = 1,
             userScrollEnabled = !isCurrentPageZoomed,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("photo_viewer_pager")
         ) { pageIndex ->
             val item = mediaList[pageIndex]
             ZoomableMediaPage(
                 item = item,
+                isCurrentPage = pageIndex == pagerState.currentPage,
+                showChrome = showChrome,
                 onTapToggleChrome = {
                     if (showExifOverlayPanel) {
                         showExifOverlayPanel = false
                     } else {
                         showChrome = !showChrome
                     }
+                },
+                onVideoControllerVisibilityChanged = { visible ->
+                    if (!visible && showExifOverlayPanel) {
+                        showExifOverlayPanel = false
+                    }
+                    showChrome = visible
                 },
                 onZoomChanged = { zoomed ->
                     if (pageIndex == pagerState.currentPage) {
@@ -322,7 +356,7 @@ fun PhotoViewerScreen(
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Move to Custom Album") },
-                                    leadingIcon = { Icon(Icons.Filled.DriveFileMove, contentDescription = null) },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = null) },
                                     onClick = {
                                         showMoreMenu = false
                                         showAssignAlbumDialog = true
@@ -352,13 +386,21 @@ fun PhotoViewerScreen(
                                         onPrintItem(currentItem)
                                     }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Rename") },
+                                    leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        showRenameDialog = true
+                                    }
+                                )
                             }
                         }
                     }
                 }
             }
         }
-
+        
         // Bottom Floating Chrome + Live EXIF HUD Strip + Expandable Detailed EXIF Panel
         AnimatedVisibility(
             visible = showChrome,
@@ -400,8 +442,8 @@ fun PhotoViewerScreen(
                     )
                 }
 
-                // Compact Live Camera EXIF Telemetry Strip (Always visible when chrome is shown)
-                if (!showExifOverlayPanel) {
+                // Compact Live Camera EXIF Telemetry Strip (Always visible on photos when chrome is shown)
+                if (!showExifOverlayPanel && !currentItem.isVideo) {
                     Surface(
                         shape = CircleShape,
                         color = Color(0xFF252322).copy(alpha = 0.88f),
@@ -481,7 +523,7 @@ fun PhotoViewerScreen(
                             testTag = "viewer_edit_button"
                         )
                         ViewerActionPill(
-                            icon = Icons.Filled.DriveFileMove,
+                            icon = Icons.AutoMirrored.Filled.DriveFileMove,
                             label = "Move",
                             onClick = { showAssignAlbumDialog = true },
                             testTag = "viewer_move_album_button"
@@ -518,8 +560,6 @@ fun PhotoViewerScreen(
             onDismiss = { showDeleteConfirm = false }
         )
     }
-
-    var showRenameDialog by remember { mutableStateOf(false) }
 
     // ... (previous code)
 

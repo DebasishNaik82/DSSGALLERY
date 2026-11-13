@@ -12,8 +12,8 @@ android {
     applicationId = "app.dsstack.gallery"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "2.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     resourceConfigurations.add("en")
@@ -98,6 +98,10 @@ dependencies {
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.transformer)
   implementation(libs.androidx.media3.effect)
+  implementation(libs.androidsvg)
+  implementation(libs.coil.svg)
+  implementation(libs.coil.video)
+  implementation(libs.coil.gif)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

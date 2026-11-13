@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.1] - 2026-11-13
+
+### Fixed
+- **Bottom Navigation Bar Button Synchronization (`GalleryApp`, `PorcelainFloatingBottomBar`):**
+  - Fixed a `LaunchedEffect` state-sync race condition where observing `pagerState.currentPage` with `currentDestination` as a restart key immediately reverted `currentDestination` back to the prior tab before `animateScrollToPage` started, preventing navigation bar taps, Explore shortcuts, and tab back-navigation from switching screens.
+  - Synchronized tab transitions cleanly using `settledPage` and `pendingTabNavigation` tracking so rapid repeated taps, manual pager swipes, and system back navigation stay in sync with the active tab highlight.
+  - Enforced minimum `48.dp` interactive touch height and `Role.Tab` selection semantics on all navigation bar items (`Photos`, `Albums`, `Favorites`, `Explore`).
+- **Photo & Video Renaming Crash Prevention (`MediaStoreDataSource`, `GalleryRepository`, `RenameDialog`):**
+  - Replaced unguarded `contentResolver.update` calls with version-aware safe renaming (`renameMediaSafely`) handling Android 11+ `MediaStore.createWriteRequest` user consent, Android 10 `RecoverableSecurityException` recovery, Android <= 9 `File.renameTo` with rollback on `MediaStore` failure, `file://` URIs, SAF `DocumentsContract`, and explicit read-only handling for Photo Picker URIs.
+  - Added filename validation (rejecting empty names, `.` / `..`, and illegal filesystem characters `\ / : * ? " < > |`), automatic extension preservation, and same-directory duplicate checks.
+  - Synchronized Room metadata (`MediaEntity`, `PickedMediaEntity`, `RecycleBinEntity`, favorites, annotations, and album mappings) immediately after successful renames.
+- **Full-Screen Viewer Left/Right Swipe Navigation (`ZoomableMediaPage`, `PhotoViewerScreen`, `ExoVideoPlayer`):**
+  - Replaced `detectTransformGestures` with a custom `awaitEachGesture` handler that leaves unzoomed single-finger drags unconsumed so `HorizontalPager` swipes left (next) and right (previous) reliably across photos, SVGs, and videos while preserving pinch-to-zoom, zoomed panning, double-tap zoom lock, and single-tap chrome toggling.
+  - Guarded `SvgImage` against zero-dimension SVG bounds and keyed `ExoVideoPlayer` instances by `uri` with lifecycle/page-based pause and controller visibility sync.
+
+### Added
+- **Local Room Media Cache (`MediaEntity`, `MediaDao`, `GalleryDatabase` v4):**
+  - Added `MediaEntity` (`media_items` table with indexes on `mediaId`, `mediaType`, `albumName`, `displayName`, `dateTakenMillis`, and `dateModifiedMillis`) storing URIs, filenames, paths, `MediaType` (`IMAGE`/`VIDEO`), sizes, MIME types, timestamps, album buckets, dimensions, and video durations.
+  - Added `MediaDao` with single/batch inserts, updates, rename updates, chunked deletions, reactive `Flow` queries (all media, images, videos, by album, filename search), and deduplicating transactional sync (`syncMediaItems`), wired into `GalleryRepository` with `350ms` debounced `MediaStore` change observation.
+- **Automated Robolectric & Compose UI Test Coverage (`GalleryFeaturesRobolectricTest`):**
+  - Added tests covering `MediaDao` CRUD/filter/search/sync, filename validation, `file://` photo/video/duplicate/missing/picker renames, `RenameDialog` validation UI, mixed photo/video viewer swipe boundaries and zoom lock, and bottom navigation bar tab switching.
+
+### Changed
+- **ProGuard / R8 Configuration & Build Setup (`app/proguard-rules.pro`, `app/build.gradle.kts`):**
+  - Added targeted `proguard-rules.pro` keep rules for Room (`RoomDatabase`, `*Entity`, `*_Impl`, `MediaType`), Kotlin metadata/signatures, Coil decoders and service loaders (`SvgDecoder`, `VideoFrameDecoder`, `GifDecoder`, `ImageDecoderDecoder`), and `AndroidSVG`, and enabled `proguard-rules.pro` in both `release` and `debug` build types.
+
+---
+
+## [2.0.0]
+
+### Added
+- SVG Viewer support using AndroidSVG.
+- Video Gallery integration with AndroidX Media3 ExoPlayer.
+- Integrated Video Player with play/pause, seekbar, and volume/brightness gestures.
+- Automatic video thumbnails in the gallery.
+- Android "Open With" integration (ACTION_VIEW, ACTION_SEND, ACTION_SEND_MULTIPLE).
+- Registration as a system media handler for image/*, video/*, and image/svg+xml.
+- Support for additional media formats: HEIC, MKV, MOV, AVI, WEBM.
+- Added the option to rename a selected photo from the More menu.
+
+### Improved
+- Improved photo navigation using left and right swipes in both grid and full-screen view.
+- Improved video thumbnail display for better visibility in the gallery.
+
+### Fixed
+- Fixed issues with large image loading and potential memory leaks.
+- Resolved permission handling bugs for Android 11+ scoped storage.
+- Fixed the issue preventing swipe navigation from working.
+- Fixed the issue where video thumbnails were not appearing correctly.
+
 ## [v1.0]
 
 Initial production release of **DSS Gallery** — a privacy-first, offline Android photo and video gallery application built with Kotlin, Jetpack Compose, Material Design 3, Android MediaStore, Room, and DataStore.

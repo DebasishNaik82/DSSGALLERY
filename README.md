@@ -1,6 +1,6 @@
-# Gallery — Porcelain Edition
+# DSS Gallery v2.0 — Complete Media Experience
 
-A complete, offline-first Android photo and video gallery application built with **Kotlin**, **Jetpack Compose**, **Material 3**, **Android MediaStore**, **Room**, and **DataStore**. Inspired by the tactile warmth and fluidity of OPPO ColorOS and archival Porcelain aesthetics.
+A complete, modern and reliable Android media application that functions as a Photo Gallery, Image Viewer, SVG Viewer, Video Gallery and Video Player. Built with **Kotlin**, **Jetpack Compose**, **Material 3**, **Android MediaStore**, **Media3 ExoPlayer**, and **AndroidSVG**.
 
 ## Key Features
 
@@ -18,15 +18,21 @@ A complete, offline-first Android photo and video gallery application built with
    - Securely move deleted items to a dedicated Recycle Bin instead of permanent deletion.
    - Easy restoration of deleted photos and videos.
 5. **Full-Screen Viewer & EXIF Telemetry Inspector**
-   - Edge-to-edge swipeable `HorizontalPager` with pinch-to-zoom (`1x–4.5x`), double-tap zoom, and native video playback.
-   - **Photo Info (EXIF & Telemetry)**: Displays camera make/model, lens specification, 6-cell optical telemetry grid (Aperture, Shutter, ISO, Focal Length, Exposure Compensation, Flash), file size, resolution, color space, interactive file path copy, shot location map card, and Room-persisted tags & personal journal notes.
+   - Edge-to-edge swipeable `HorizontalPager` with pinch-to-zoom (`1x–4.5x`), double-tap zoom, and native **Media3 ExoPlayer** video playback.
+   - **SVG Viewer**: Native high-quality vector rendering for SVG files with pan and zoom.
+   - **Video Player**: Integrated playback with volume/brightness gestures, seekbar, and play/pause controls.
+   - **Photo Info (EXIF & Telemetry)**: Displays camera make/model, lens specification, 6-cell optical telemetry grid, resolution, color space, and Room-persisted tags & journal notes.
 6. **Explore & Search**
    - Instant offline search across filenames, album names, personal captions, and tags.
-   - Filter by media type (*Photos*, *Videos*), date ranges, and albums, with persisted recent searches.
-7. **Strict Offline & Privacy-First Architecture**
+   - Filter by media type (*Photos*, *Videos*, *SVGs*), date ranges, and albums.
+7. **Android "Open With" Integration**
+   - Registered system media handler for images, videos, and SVGs.
+   - Support for `ACTION_VIEW`, `ACTION_SEND`, and `ACTION_SEND_MULTIPLE`.
+   - Seamlessly opens media from external apps like File Manager, WhatsApp, and browsers.
+8. **Strict Offline & Privacy-First Architecture**
    - Zero `INTERNET` permission in `AndroidManifest.xml`.
    - Zero cloud SDKs, analytics, or external servers.
-   - Supports Android 13+ granular media permissions (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`), Android 14+ Partial Photo Access (`READ_MEDIA_VISUAL_USER_SELECTED`), and the zero-permission **Android Photo Picker**.
+   - Supports Android 13+ granular media permissions, Android 14+ Partial Photo Access, and the zero-permission **Android Photo Picker**.
 
 ## Architecture
 

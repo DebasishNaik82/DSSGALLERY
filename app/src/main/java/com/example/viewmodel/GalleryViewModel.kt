@@ -69,7 +69,8 @@ data class GalleryUiState(
     val recentSearches: List<String> = emptyList(),
     val activeExifTelemetry: ExifTelemetry? = null,
     val statusMessage: String? = null,
-    val pendingDeleteIntentSender: IntentSender? = null
+    val pendingDeleteIntentSender: IntentSender? = null,
+    val pendingRenameIntentSender: IntentSender? = null
 )
 
 class GalleryViewModel(
@@ -115,24 +116,27 @@ class GalleryViewModel(
 
     private val combinedStatusMessageFlow = combine(
         statusMessageFlow,
-        repository.deleteStatusMessage
-    ) { localMsg, repoDeleteMsg ->
-        repoDeleteMsg ?: localMsg
+        repository.deleteStatusMessage,
+        repository.renameStatusMessage
+    ) { localMsg, repoDeleteMsg, repoRenameMsg ->
+        repoDeleteMsg ?: repoRenameMsg ?: localMsg
     }
 
-    private val combinedPendingDeleteFlow = combine(
+    private val combinedConsentFlow = combine(
         pendingDeleteFlow,
-        repository.pendingDeleteIntentSender
-    ) { localSender, repoSender ->
-        repoSender ?: localSender
+        repository.pendingDeleteIntentSender,
+        repository.pendingRenameIntentSender
+    ) { localSender, repoDeleteSender, repoRenameSender ->
+        (repoDeleteSender ?: localSender) to repoRenameSender
     }
 
     val uiState: StateFlow<GalleryUiState> = combine(
         coreDataFlow,
         uiControlsFlow,
         combinedStatusMessageFlow,
-        combinedPendingDeleteFlow
-    ) { core, controls, statusMsg, pendingDelete ->
+        combinedConsentFlow
+    ) { core, controls, statusMsg, consentPair ->
+        val (pendingDelete, pendingRename) = consentPair
         val visibleMedia = if (core.prefs.showVideosInTimeline) {
             core.allMedia
         } else {
@@ -140,9 +144,10 @@ class GalleryViewModel(
         }
 
         val sortedMedia = repository.sortMedia(visibleMedia, core.prefs.sortOption)
+        val allSortedMedia = repository.sortMedia(core.allMedia, core.prefs.sortOption)
         val timelineGroups = repository.groupMediaByDay(sortedMedia)
         val memories = repository.buildMemories(sortedMedia)
-        val albums = repository.buildAlbums(core.allMedia, core.customAlbums)
+        val albums = repository.buildAlbums(allSortedMedia, core.customAlbums)
 
         val favorites = sortedMedia.filter { it.isFavorite }
         val filteredFavs = filterMediaList(
@@ -180,7 +185,8 @@ class GalleryViewModel(
             recentSearches = controls.recentSearches,
             activeExifTelemetry = controls.exif,
             statusMessage = statusMsg,
-            pendingDeleteIntentSender = pendingDelete
+            pendingDeleteIntentSender = pendingDelete,
+            pendingRenameIntentSender = pendingRename
         )
     }.stateIn(
         scope = viewModelScope,
@@ -314,8 +320,32 @@ class GalleryViewModel(
 
     fun renameMedia(item: MediaItem, newName: String) {
         viewModelScope.launch {
-            repository.renameMedia(item, newName)
-            refreshLibrary()
+            try {
+                when (repository.renameMedia(item, newName)) {
+                    is com.example.data.RenameMediaOutcome.Success -> clearSelection()
+                    is com.example.data.RenameMediaOutcome.PendingConsent -> Unit
+                    is com.example.data.RenameMediaOutcome.Error -> Unit
+                }
+            } catch (e: Exception) {
+                showStatusMessage(e.localizedMessage ?: "Failed to rename file")
+            }
+        }
+    }
+
+    fun markRenameConsentLaunched(sender: IntentSender): Boolean {
+        return repository.markRenameConsentDialogLaunched(sender)
+    }
+
+    fun clearPendingRenameRequest(completed: Boolean) {
+        viewModelScope.launch {
+            try {
+                val outcome = repository.handleRenameConsentResult(completed)
+                if (outcome is com.example.data.RenameMediaOutcome.Success) {
+                    clearSelection()
+                }
+            } catch (e: Exception) {
+                showStatusMessage(e.localizedMessage ?: "Failed to rename file")
+            }
         }
     }
 
@@ -517,6 +547,7 @@ class GalleryViewModel(
     fun dismissStatusMessage() {
         statusMessageFlow.value = null
         repository.clearDeleteStatusMessage()
+        repository.clearRenameStatusMessage()
     }
 
     private fun filterMediaList(
@@ -597,6 +628,7 @@ class GalleryViewModel(
                 context = application,
                 mediaStoreDataSource = mediaStoreDataSource,
                 galleryDao = db.galleryDao(),
+                mediaDao = db.mediaDao(),
                 externalScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
             )
             return GalleryViewModel(application, repo, prefsRepo) as T

@@ -290,7 +290,7 @@ fun SettingsScreen(
                     "• Zero cloud servers, analytics, or external telemetry SDKs.\n" +
                     "• Reads device media directly via Android MediaStore & Photo Picker.\n" +
                     "• Stores favorites, tags, captions, and preferences strictly on-device using Room SQLite and Jetpack DataStore.\n" +
-                    "• Gallery v1.0 • Porcelain Edition",
+                    "• DSS Gallery v2.0 • Porcelain Edition",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary
             )

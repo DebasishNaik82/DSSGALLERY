@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -67,7 +68,11 @@ import com.example.viewmodel.GalleryViewModel
 sealed interface GalleryDestination {
     data class MainTab(val tab: GalleryBottomTab) : GalleryDestination
     data class AlbumDetail(val albumId: String) : GalleryDestination
-    data class PhotoViewer(val initialUri: String, val sourceAlbumId: String? = null) : GalleryDestination
+    data class PhotoViewer(
+        val initialUri: String,
+        val sourceAlbumId: String? = null,
+        val externalUris: List<String>? = null
+    ) : GalleryDestination
     data class PhotoEditor(val mediaUri: String) : GalleryDestination
     data class VideoEditor(val mediaUri: String) : GalleryDestination
     data object RecycleBin : GalleryDestination
@@ -77,15 +82,35 @@ sealed interface GalleryDestination {
 
 @Composable
 fun GalleryApp(
-    viewModel: GalleryViewModel
+    viewModel: GalleryViewModel,
+    externalIntentData: List<Uri>? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     var currentDestination by remember {
-        mutableStateOf<GalleryDestination>(GalleryDestination.MainTab(GalleryBottomTab.PHOTOS))
+        mutableStateOf<GalleryDestination>(
+            if (externalIntentData != null && externalIntentData.isNotEmpty()) {
+                GalleryDestination.PhotoViewer(
+                    initialUri = externalIntentData.first().toString(),
+                    externalUris = externalIntentData.map { it.toString() }
+                )
+            } else {
+                GalleryDestination.MainTab(GalleryBottomTab.PHOTOS)
+            }
+        )
     }
+
+    LaunchedEffect(externalIntentData) {
+        if (externalIntentData != null && externalIntentData.isNotEmpty()) {
+            currentDestination = GalleryDestination.PhotoViewer(
+                initialUri = externalIntentData.first().toString(),
+                externalUris = externalIntentData.map { it.toString() }
+            )
+        }
+    }
+
     var showSplash by remember { mutableStateOf(true) }
 
     if (showSplash) {
@@ -94,9 +119,20 @@ fun GalleryApp(
     }
 
     var lastTab by remember { mutableStateOf(GalleryBottomTab.PHOTOS) }
+    var pendingTabNavigation by remember { mutableStateOf<GalleryBottomTab?>(null) }
+
+    fun navigateToTab(tab: GalleryBottomTab) {
+        lastTab = tab
+        val currentMain = currentDestination as? GalleryDestination.MainTab
+        if (currentMain?.tab != tab) {
+            pendingTabNavigation = tab
+            currentDestination = GalleryDestination.MainTab(tab)
+        }
+    }
 
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     var showBatchAssignAlbum by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     var batchMoveMode by remember { mutableStateOf(true) }
     var activeSlideshow by remember { mutableStateOf<Pair<String, List<MediaItem>>?>(null) }
     var showPermissionDialog by remember { mutableStateOf(uiState.preferences.showPermissionDialog) }
@@ -124,6 +160,12 @@ fun GalleryApp(
         viewModel.clearPendingDeleteRequest(completed = result.resultCode == Activity.RESULT_OK)
     }
 
+    val renameConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.clearPendingRenameRequest(completed = result.resultCode == Activity.RESULT_OK)
+    }
+
     LaunchedEffect(uiState.pendingDeleteIntentSender, currentDestination) {
         val sender = uiState.pendingDeleteIntentSender
         if (sender != null && currentDestination != GalleryDestination.RecycleBin) {
@@ -132,6 +174,19 @@ fun GalleryApp(
                     deleteConsentLauncher.launch(IntentSenderRequest.Builder(sender).build())
                 }.onFailure {
                     viewModel.clearPendingDeleteRequest(completed = false)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.pendingRenameIntentSender) {
+        val sender = uiState.pendingRenameIntentSender
+        if (sender != null) {
+            if (viewModel.markRenameConsentLaunched(sender)) {
+                runCatching {
+                    renameConsentLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                }.onFailure {
+                    viewModel.clearPendingRenameRequest(completed = false)
                 }
             }
         }
@@ -166,8 +221,7 @@ fun GalleryApp(
                 currentDestination is GalleryDestination.MainTab &&
                 (currentDestination as GalleryDestination.MainTab).tab != GalleryBottomTab.PHOTOS
         ) {
-            lastTab = GalleryBottomTab.PHOTOS
-            currentDestination = GalleryDestination.MainTab(GalleryBottomTab.PHOTOS)
+            navigateToTab(GalleryBottomTab.PHOTOS)
         }
 
         Scaffold(
@@ -197,76 +251,369 @@ fun GalleryApp(
                         }
                     )
                 }
-                AnimatedContent(
-                    targetState = currentDestination,
-                    transitionSpec = {
-                        if (targetState is GalleryDestination.PhotoViewer) {
-                            (scaleIn(
-                                initialScale = 0.85f,
-                                animationSpec = spring(
-                                    dampingRatio = 0.82f,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
-                            ) + fadeIn(animationSpec = tween(260)))
-                                .togetherWith(
-                                    scaleOut(
-                                        targetScale = 1.08f,
-                                        animationSpec = tween(220)
-                                    ) + fadeOut(animationSpec = tween(180))
-                                )
-                        } else if (initialState is GalleryDestination.PhotoViewer) {
-                            (scaleIn(
-                                initialScale = 1.08f,
-                                animationSpec = spring(
-                                    dampingRatio = 0.85f,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
-                            ) + fadeIn(animationSpec = tween(240)))
-                                .togetherWith(
-                                    scaleOut(
-                                        targetScale = 0.85f,
-                                        animationSpec = tween(200)
-                                    ) + fadeOut(animationSpec = tween(180))
-                                )
+                val pagerState = androidx.compose.foundation.pager.rememberPagerState(
+                    initialPage = GalleryBottomTab.entries.indexOf(
+                        (currentDestination as? GalleryDestination.MainTab)?.tab ?: GalleryBottomTab.PHOTOS
+                    ).coerceAtLeast(0)
+                ) { GalleryBottomTab.entries.size }
+
+                LaunchedEffect(currentDestination) {
+                    val dest = currentDestination
+                    if (dest is GalleryDestination.MainTab) {
+                        lastTab = dest.tab
+                        val targetPage = GalleryBottomTab.entries.indexOf(dest.tab)
+                        if (targetPage >= 0 && pagerState.currentPage != targetPage) {
+                            pendingTabNavigation = dest.tab
+                            try {
+                                pagerState.animateScrollToPage(targetPage)
+                            } finally {
+                                if (pendingTabNavigation == dest.tab) {
+                                    pendingTabNavigation = null
+                                }
+                            }
                         } else {
-                            fadeIn(animationSpec = tween(200)).togetherWith(fadeOut(animationSpec = tween(180)))
+                            pendingTabNavigation = null
                         }
-                    },
-                    label = "gallery_destination_transition",
-                    modifier = Modifier.fillMaxSize()
-                ) { dest ->
-                    when (dest) {
-                        is GalleryDestination.MainTab -> {
-                            when (dest.tab) {
-                            GalleryBottomTab.PHOTOS -> {
-                                PhotosHomeScreen(
-                                    uiState = uiState,
-                                    onOpenPhoto = { item ->
-                                        currentDestination = GalleryDestination.PhotoViewer(item.uri.toString())
+                    } else {
+                        pendingTabNavigation = null
+                    }
+                }
+
+                LaunchedEffect(pagerState) {
+                    snapshotFlow { pagerState.settledPage to pagerState.isScrollInProgress }
+                        .collect { (settledPage, isScrolling) ->
+                            if (!isScrolling && pendingTabNavigation == null) {
+                                val dest = currentDestination
+                                if (dest is GalleryDestination.MainTab) {
+                                    val settledTab = GalleryBottomTab.entries.getOrNull(settledPage)
+                                    if (settledTab != null && dest.tab != settledTab) {
+                                        currentDestination = GalleryDestination.MainTab(settledTab)
+                                        lastTab = settledTab
+                                    }
+                                }
+                            }
+                        }
+                }
+
+                if (currentDestination is GalleryDestination.MainTab) {
+                    androidx.compose.foundation.pager.HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize()
+                    ) { page ->
+                        val tab = GalleryBottomTab.entries[page]
+                        when (tab) {
+                            GalleryBottomTab.PHOTOS -> PhotosHomeScreen(
+                                uiState = uiState,
+                                onOpenPhoto = { item ->
+                                    currentDestination = GalleryDestination.PhotoViewer(item.uri.toString())
+                                },
+                                onToggleSelect = { item ->
+                                    viewModel.toggleSelection(item.uri.toString())
+                                },
+                                onEnterSelectionMode = { item ->
+                                    viewModel.enterSelectionMode(item?.uri?.toString())
+                                },
+                                onClearSelection = { viewModel.clearSelection() },
+                                onSelectAll = { selectAll ->
+                                    viewModel.selectItems(uiState.allMedia, selectAll)
+                                },
+                                onSelectGroup = { groupItems, selectAll ->
+                                    viewModel.selectItems(groupItems, selectAll)
+                                },
+                                onOpenSearch = {
+                                    navigateToTab(GalleryBottomTab.SEARCH)
+                                },
+                                onOpenSettings = {
+                                    currentDestination = GalleryDestination.Settings
+                                },
+                                onOpenStatesInspector = {
+                                    currentDestination = GalleryDestination.StatesInspector
+                                },
+                                onRequestPermissions = {
+                                    permissionLauncher.launch(viewModel.requiredPermissions)
+                                },
+                                onLaunchPhotoPicker = {
+                                    photoPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                    )
+                                },
+                                onPlayMemoryReel = { memory ->
+                                    activeSlideshow = memory.title to memory.allItems
+                                },
+                                onCycleGridDensity = {
+                                    val next = when (uiState.preferences.gridDensity) {
+                                        GridDensity.STANDARD_3 -> GridDensity.COMPACT_4
+                                        GridDensity.COMPACT_4 -> GridDensity.COMFORTABLE_2
+                                        GridDensity.COMFORTABLE_2 -> GridDensity.STANDARD_3
+                                    }
+                                    viewModel.setGridDensity(next)
+                                }
+                            )
+
+                            GalleryBottomTab.ALBUMS -> AlbumsScreen(
+                                uiState = uiState,
+                                onOpenAlbum = { album ->
+                                    currentDestination = GalleryDestination.AlbumDetail(album.id)
+                                },
+                                onCreateCustomAlbum = { name ->
+                                    viewModel.createCustomAlbum(name)
+                                },
+                                onOpenSettings = {
+                                    currentDestination = GalleryDestination.Settings
+                                },
+                                onOpenRecycleBin = {
+                                    currentDestination = GalleryDestination.RecycleBin
+                                }
+                            )
+
+                            GalleryBottomTab.FAVORITES -> FavoritesScreen(
+                                uiState = uiState,
+                                onOpenPhoto = { item ->
+                                    currentDestination = GalleryDestination.PhotoViewer(
+                                        initialUri = item.uri.toString(),
+                                        sourceAlbumId = "system_favorites"
+                                    )
+                                },
+                                onToggleSelect = { item ->
+                                    viewModel.toggleSelection(item.uri.toString())
+                                },
+                                onEnterSelectionMode = {
+                                    viewModel.enterSelectionMode()
+                                },
+                                onClearSelection = {
+                                    viewModel.clearSelection()
+                                },
+                                onSelectAll = { selectAll ->
+                                    viewModel.selectItems(uiState.filteredFavorites, selectAll)
+                                },
+                                onSelectGroup = { groupItems, selectAll ->
+                                    viewModel.selectItems(groupItems, selectAll)
+                                },
+                                onSetDateFilter = { viewModel.setFavoritesDateFilter(it) },
+                                onSetMediaFilter = { viewModel.setFavoritesMediaFilter(it) },
+                                onPlaySlideshow = { items ->
+                                    activeSlideshow = "Best of Favorites" to items
+                                },
+                                onShareFavorites = { items ->
+                                    shareMediaItems(context, items)
+                                },
+                                onPrintOrExport = { items ->
+                                    shareMediaItems(context, items, chooserTitle = "Print or Export Favorites")
+                                },
+                                onOpenSearch = {
+                                    navigateToTab(GalleryBottomTab.SEARCH)
+                                },
+                                onOpenSettings = {
+                                    currentDestination = GalleryDestination.Settings
+                                }
+                            )
+
+                            GalleryBottomTab.SEARCH -> SearchExploreScreen(
+                                uiState = uiState,
+                                onQueryChange = { viewModel.setSearchQuery(it) },
+                                onSubmitQuery = { viewModel.submitSearchQuery(it) },
+                                onSelectMediaFilter = { viewModel.setSearchMediaFilter(it) },
+                                onSelectDateFilter = { viewModel.setSearchDateFilter(it) },
+                                onSelectAlbumFilter = { viewModel.setSearchAlbumFilter(it) },
+                                onClearAllFilters = { viewModel.clearSearchFilters() },
+                                onRemoveRecentSearch = { viewModel.removeRecentSearch(it) },
+                                onClearRecentSearches = { viewModel.clearRecentSearches() },
+                                onOpenPhoto = { item ->
+                                    currentDestination = GalleryDestination.PhotoViewer(item.uri.toString())
+                                },
+                                onToggleSelect = { item ->
+                                    viewModel.toggleSelection(item.uri.toString())
+                                },
+                                onEnterSelectionMode = { viewModel.enterSelectionMode() },
+                                onClearSelection = { viewModel.clearSelection() },
+                                onSelectAll = { selectAll ->
+                                    viewModel.selectItems(uiState.searchResults, selectAll)
+                                }
+                            )
+                        }
+                    }
+                } else {
+                    AnimatedContent(
+                        targetState = currentDestination,
+                        transitionSpec = {
+                            if (targetState is GalleryDestination.PhotoViewer) {
+                                (scaleIn(
+                                    initialScale = 0.85f,
+                                    animationSpec = spring(
+                                        dampingRatio = 0.82f,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                ) + fadeIn(animationSpec = tween(260)))
+                                    .togetherWith(
+                                        scaleOut(
+                                            targetScale = 1.08f,
+                                            animationSpec = tween(220)
+                                        ) + fadeOut(animationSpec = tween(180))
+                                    )
+                            } else if (initialState is GalleryDestination.PhotoViewer) {
+                                (scaleIn(
+                                    initialScale = 1.08f,
+                                    animationSpec = spring(
+                                        dampingRatio = 0.85f,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                ) + fadeIn(animationSpec = tween(240)))
+                                    .togetherWith(
+                                        scaleOut(
+                                            targetScale = 0.85f,
+                                            animationSpec = tween(200)
+                                        ) + fadeOut(animationSpec = tween(180))
+                                    )
+                            } else {
+                                fadeIn(animationSpec = tween(200)).togetherWith(fadeOut(animationSpec = tween(180)))
+                            }
+                        },
+                        label = "gallery_destination_transition",
+                        modifier = Modifier.fillMaxSize()
+                    ) { dest ->
+                        if (dest is GalleryDestination.MainTab) return@AnimatedContent
+                        when (dest) {
+                            is GalleryDestination.AlbumDetail -> {
+                                val album = uiState.albums.find { it.id == dest.albumId }
+                                if (album != null) {
+                                    AlbumDetailScreen(
+                                        album = album,
+                                        uiState = uiState,
+                                        onBack = {
+                                            viewModel.clearSelection()
+                                            currentDestination = GalleryDestination.MainTab(GalleryBottomTab.ALBUMS)
+                                        },
+                                        onOpenPhoto = { item ->
+                                            currentDestination = GalleryDestination.PhotoViewer(
+                                                initialUri = item.uri.toString(),
+                                                sourceAlbumId = album.id
+                                            )
+                                        },
+                                        onToggleSelect = { item ->
+                                            viewModel.toggleSelection(item.uri.toString())
+                                        },
+                                        onEnterSelectionMode = { viewModel.enterSelectionMode() },
+                                        onClearSelection = { viewModel.clearSelection() },
+                                        onSelectAll = { selectAll ->
+                                            viewModel.selectItems(album.items, selectAll)
+                                        },
+                                        onPlaySlideshow = { items ->
+                                            activeSlideshow = album.title to items
+                                        },
+                                        onMovePhotosIntoThisAlbum = { items ->
+                                            viewModel.assignItemsToAlbum(items, album.title, moveItems = true)
+                                        },
+                                        onRemoveSelectedFromAlbum = { items ->
+                                            viewModel.removeItemsFromCustomAlbum(items, album.title)
+                                        },
+                                        onDeleteCustomAlbum = {
+                                            viewModel.deleteCustomAlbum(album.title)
+                                            currentDestination = GalleryDestination.MainTab(GalleryBottomTab.ALBUMS)
+                                        }
+                                    )
+                                } else {
+                                    currentDestination = GalleryDestination.MainTab(GalleryBottomTab.ALBUMS)
+                                }
+                            }
+
+                            is GalleryDestination.PhotoViewer -> {
+                                val sourceList = remember(dest.sourceAlbumId, dest.externalUris, uiState.allMedia, uiState.albums, uiState.filteredFavorites) {
+                                    val external = dest.externalUris
+                                    if (external != null) {
+                                        external.map { uriStr ->
+                                            uiState.allMedia.find { it.uri.toString() == uriStr }
+                                                ?: createPlaceholderMediaItem(context, Uri.parse(uriStr))
+                                        }
+                                    } else {
+                                        when (dest.sourceAlbumId) {
+                                            "system_favorites" -> uiState.filteredFavorites.ifEmpty { uiState.allMedia }
+                                            null -> uiState.allMedia
+                                            else -> uiState.albums.find { it.id == dest.sourceAlbumId }?.items?.ifEmpty { uiState.allMedia }
+                                                ?: uiState.allMedia
+                                        }
+                                    }
+                                }
+
+                                val allAlbumNames = remember(uiState.albums) {
+                                    uiState.albums.map { it.title }
+                                }
+
+                                PhotoViewerScreen(
+                                    mediaList = sourceList,
+                                    initialMediaUri = dest.initialUri,
+                                    activeExif = uiState.activeExifTelemetry,
+                                    existingCustomAlbums = allAlbumNames,
+                                    onBack = {
+                                        currentDestination = if (dest.sourceAlbumId != null && dest.sourceAlbumId != "system_favorites") {
+                                            GalleryDestination.AlbumDetail(dest.sourceAlbumId)
+                                        } else {
+                                            GalleryDestination.MainTab(lastTab)
+                                        }
                                     },
-                                    onToggleSelect = { item ->
-                                        viewModel.toggleSelection(item.uri.toString())
+                                    onLoadExif = { viewModel.loadExifFor(it) },
+                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                    onShareItem = { shareMediaItems(context, listOf(it)) },
+                                    onEditItem = { item ->
+                                        if (item.isVideo) {
+                                            currentDestination = GalleryDestination.VideoEditor(item.uri.toString())
+                                        } else {
+                                            currentDestination = GalleryDestination.PhotoEditor(item.uri.toString())
+                                        }
                                     },
-                                    onEnterSelectionMode = { item ->
-                                        viewModel.enterSelectionMode(item?.uri?.toString())
+                                    onSetAsWallpaperOrUseAs = { item ->
+                                        launchUseAsIntent(context, item) { fallbackMsg ->
+                                            viewModel.showStatusMessage(fallbackMsg)
+                                        }
                                     },
-                                    onClearSelection = { viewModel.clearSelection() },
-                                    onSelectAll = { selectAll ->
-                                        viewModel.selectItems(uiState.allMedia, selectAll)
+                                    onPrintItem = { item ->
+                                        shareMediaItems(context, listOf(item), chooserTitle = "Print or Export Photo")
                                     },
-                                    onSelectGroup = { groupItems, selectAll ->
-                                        viewModel.selectItems(groupItems, selectAll)
+                                    onDeleteItem = { item ->
+                                        viewModel.deleteItems(listOf(item))
                                     },
-                                    onOpenSearch = {
-                                        lastTab = GalleryBottomTab.SEARCH
-                                        currentDestination = GalleryDestination.MainTab(GalleryBottomTab.SEARCH)
+                                    onMoveToCustomAlbum = { item, albumName, moveMode ->
+                                        viewModel.assignItemsToAlbum(listOf(item), albumName, moveItems = moveMode)
                                     },
-                                    onOpenSettings = {
-                                        currentDestination = GalleryDestination.Settings
+                                    onRenameItem = { item, newName ->
+                                        viewModel.renameMedia(item, newName)
                                     },
-                                    onOpenStatesInspector = {
+                                    onSavePhotoDetails = { item, caption, tags, album ->
+                                        viewModel.savePhotoDetails(item, caption, tags, album)
+                                    },
+                                    onExportExifReport = { item, exif ->
+                                        shareExifTelemetryReport(context, item, exif)
+                                    }
+                                )
+                            }
+
+                            GalleryDestination.Settings -> {
+                                SettingsScreen(
+                                    preferences = uiState.preferences,
+                                    totalMediaCount = uiState.allMedia.size,
+                                    favoritesCount = uiState.favorites.size,
+                                    onBack = {
+                                        currentDestination = GalleryDestination.MainTab(lastTab)
+                                    },
+                                    onSelectTheme = { viewModel.setThemeOption(it) },
+                                    onSelectGridDensity = { viewModel.setGridDensity(it) },
+                                    onSelectSortOption = { viewModel.setSortOption(it) },
+                                    onToggleShowVideos = { viewModel.setShowVideosInTimeline(it) },
+                                    onToggleShowVideoDuration = { viewModel.setShowVideoDurationBadges(it) },
+                                    onToggleShowMemories = { viewModel.setShowMemoriesSection(it) },
+                                    onLaunchPhotoPicker = {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                        )
+                                    },
+                                    onOpenPermissionsScreen = {
                                         currentDestination = GalleryDestination.StatesInspector
-                                    },
+                                    }
+                                )
+                            }
+
+                            GalleryDestination.StatesInspector -> {
+                                PermissionAndStatesScreen(
+                                    permissionAccessLevel = uiState.permissionAccessLevel,
                                     onRequestPermissions = {
                                         permissionLauncher.launch(viewModel.requiredPermissions)
                                     },
@@ -275,290 +622,47 @@ fun GalleryApp(
                                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                                         )
                                     },
-                                    onPlayMemoryReel = { memory ->
-                                        activeSlideshow = memory.title to memory.allItems
-                                    },
-                                    onCycleGridDensity = {
-                                        val next = when (uiState.preferences.gridDensity) {
-                                            GridDensity.STANDARD_3 -> GridDensity.COMPACT_4
-                                            GridDensity.COMPACT_4 -> GridDensity.COMFORTABLE_2
-                                            GridDensity.COMFORTABLE_2 -> GridDensity.STANDARD_3
-                                        }
-                                        viewModel.setGridDensity(next)
+                                    onBack = {
+                                        currentDestination = GalleryDestination.MainTab(lastTab)
                                     }
                                 )
                             }
 
-                            GalleryBottomTab.ALBUMS -> {
-                                AlbumsScreen(
-                                    uiState = uiState,
-                                    onOpenAlbum = { album ->
-                                        currentDestination = GalleryDestination.AlbumDetail(album.id)
-                                    },
-                                    onCreateCustomAlbum = { name ->
-                                        viewModel.createCustomAlbum(name)
-                                    },
-                                    onOpenSettings = {
-                                        currentDestination = GalleryDestination.Settings
-                                    },
-                                    onOpenRecycleBin = {
-                                        currentDestination = GalleryDestination.RecycleBin
+                            is GalleryDestination.PhotoEditor -> {
+                                PhotoEditorScreen(
+                                    uri = Uri.parse(dest.mediaUri),
+                                    onNavigateBack = {
+                                        currentDestination = GalleryDestination.PhotoViewer(dest.mediaUri)
                                     }
                                 )
                             }
 
-                            GalleryBottomTab.FAVORITES -> {
-                                FavoritesScreen(
-                                    uiState = uiState,
-                                    onOpenPhoto = { item ->
-                                        currentDestination = GalleryDestination.PhotoViewer(
-                                            initialUri = item.uri.toString(),
-                                            sourceAlbumId = "system_favorites"
-                                        )
-                                    },
-                                    onToggleSelect = { item ->
-                                        viewModel.toggleSelection(item.uri.toString())
-                                    },
-                                    onEnterSelectionMode = {
-                                        viewModel.enterSelectionMode()
-                                    },
-                                    onClearSelection = {
-                                        viewModel.clearSelection()
-                                    },
-                                    onSelectAll = { selectAll ->
-                                        viewModel.selectItems(uiState.filteredFavorites, selectAll)
-                                    },
-                                    onSelectGroup = { groupItems, selectAll ->
-                                        viewModel.selectItems(groupItems, selectAll)
-                                    },
-                                    onSetDateFilter = { viewModel.setFavoritesDateFilter(it) },
-                                    onSetMediaFilter = { viewModel.setFavoritesMediaFilter(it) },
-                                    onPlaySlideshow = { items ->
-                                        activeSlideshow = "Best of Favorites" to items
-                                    },
-                                    onShareFavorites = { items ->
-                                        shareMediaItems(context, items)
-                                    },
-                                    onPrintOrExport = { items ->
-                                        shareMediaItems(context, items, chooserTitle = "Print or Export Favorites")
-                                    },
-                                    onOpenSearch = {
-                                        lastTab = GalleryBottomTab.SEARCH
-                                        currentDestination = GalleryDestination.MainTab(GalleryBottomTab.SEARCH)
-                                    },
-                                    onOpenSettings = {
-                                        currentDestination = GalleryDestination.Settings
+                            is GalleryDestination.VideoEditor -> {
+                                VideoEditorScreen(
+                                    uri = Uri.parse(dest.mediaUri),
+                                    onNavigateBack = {
+                                        currentDestination = GalleryDestination.PhotoViewer(dest.mediaUri)
                                     }
                                 )
                             }
 
-                            GalleryBottomTab.SEARCH -> {
-                                SearchExploreScreen(
-                                    uiState = uiState,
-                                    onQueryChange = { viewModel.setSearchQuery(it) },
-                                    onSubmitQuery = { viewModel.submitSearchQuery(it) },
-                                    onSelectMediaFilter = { viewModel.setSearchMediaFilter(it) },
-                                    onSelectDateFilter = { viewModel.setSearchDateFilter(it) },
-                                    onSelectAlbumFilter = { viewModel.setSearchAlbumFilter(it) },
-                                    onClearAllFilters = { viewModel.clearSearchFilters() },
-                                    onRemoveRecentSearch = { viewModel.removeRecentSearch(it) },
-                                    onClearRecentSearches = { viewModel.clearRecentSearches() },
+                            GalleryDestination.RecycleBin -> {
+                                val recycleBinViewModel: com.example.viewmodel.RecycleBinViewModel = viewModel(
+                                    factory = com.example.viewmodel.RecycleBinViewModel.Factory(
+                                        repository = viewModel.galleryRepository
+                                    )
+                                )
+                                com.example.ui.screens.RecycleBinScreen(
+                                    viewModel = recycleBinViewModel,
+                                    onBack = {
+                                        currentDestination = GalleryDestination.MainTab(lastTab)
+                                    },
                                     onOpenPhoto = { item ->
                                         currentDestination = GalleryDestination.PhotoViewer(item.uri.toString())
-                                    },
-                                    onToggleSelect = { item ->
-                                        viewModel.toggleSelection(item.uri.toString())
-                                    },
-                                    onEnterSelectionMode = { viewModel.enterSelectionMode() },
-                                    onClearSelection = { viewModel.clearSelection() },
-                                    onSelectAll = { selectAll ->
-                                        viewModel.selectItems(uiState.searchResults, selectAll)
                                     }
                                 )
                             }
-                        }
-                    }
-
-                    is GalleryDestination.AlbumDetail -> {
-                        val album = uiState.albums.find { it.id == dest.albumId }
-                        if (album != null) {
-                            AlbumDetailScreen(
-                                album = album,
-                                uiState = uiState,
-                                onBack = {
-                                    viewModel.clearSelection()
-                                    currentDestination = GalleryDestination.MainTab(GalleryBottomTab.ALBUMS)
-                                },
-                                onOpenPhoto = { item ->
-                                    currentDestination = GalleryDestination.PhotoViewer(
-                                        initialUri = item.uri.toString(),
-                                        sourceAlbumId = album.id
-                                    )
-                                },
-                                onToggleSelect = { item ->
-                                    viewModel.toggleSelection(item.uri.toString())
-                                },
-                                onEnterSelectionMode = { viewModel.enterSelectionMode() },
-                                onClearSelection = { viewModel.clearSelection() },
-                                onSelectAll = { selectAll ->
-                                    viewModel.selectItems(album.items, selectAll)
-                                },
-                                onPlaySlideshow = { items ->
-                                    activeSlideshow = album.title to items
-                                },
-                                onMovePhotosIntoThisAlbum = { items ->
-                                    viewModel.assignItemsToAlbum(items, album.title, moveItems = true)
-                                },
-                                onRemoveSelectedFromAlbum = { items ->
-                                    viewModel.removeItemsFromCustomAlbum(items, album.title)
-                                },
-                                onDeleteCustomAlbum = {
-                                    viewModel.deleteCustomAlbum(album.title)
-                                    currentDestination = GalleryDestination.MainTab(GalleryBottomTab.ALBUMS)
-                                }
-                            )
-                        } else {
-                            currentDestination = GalleryDestination.MainTab(GalleryBottomTab.ALBUMS)
-                        }
-                    }
-
-                    is GalleryDestination.PhotoViewer -> {
-                        val sourceList = remember(dest.sourceAlbumId, uiState.allMedia, uiState.albums, uiState.filteredFavorites) {
-                            when (dest.sourceAlbumId) {
-                                "system_favorites" -> uiState.filteredFavorites.ifEmpty { uiState.allMedia }
-                                null -> uiState.allMedia
-                                else -> uiState.albums.find { it.id == dest.sourceAlbumId }?.items?.ifEmpty { uiState.allMedia }
-                                    ?: uiState.allMedia
-                            }
-                        }
-
-                        val allAlbumNames = remember(uiState.albums) {
-                            uiState.albums.map { it.title }
-                        }
-
-                        PhotoViewerScreen(
-                            mediaList = sourceList,
-                            initialMediaUri = dest.initialUri,
-                            activeExif = uiState.activeExifTelemetry,
-                            existingCustomAlbums = allAlbumNames,
-                            onBack = {
-                                currentDestination = if (dest.sourceAlbumId != null && dest.sourceAlbumId != "system_favorites") {
-                                    GalleryDestination.AlbumDetail(dest.sourceAlbumId)
-                                } else {
-                                    GalleryDestination.MainTab(lastTab)
-                                }
-                            },
-                            onLoadExif = { viewModel.loadExifFor(it) },
-                            onToggleFavorite = { viewModel.toggleFavorite(it) },
-                            onShareItem = { shareMediaItems(context, listOf(it)) },
-                            onEditItem = { item ->
-                                if (item.isVideo) {
-                                    currentDestination = GalleryDestination.VideoEditor(item.uri.toString())
-                                } else {
-                                    currentDestination = GalleryDestination.PhotoEditor(item.uri.toString())
-                                }
-                            },
-                            onSetAsWallpaperOrUseAs = { item ->
-                                launchUseAsIntent(context, item) { fallbackMsg ->
-                                    viewModel.showStatusMessage(fallbackMsg)
-                                }
-                            },
-                            onPrintItem = { item ->
-                                shareMediaItems(context, listOf(item), chooserTitle = "Print or Export Photo")
-                            },
-                            onDeleteItem = { item ->
-                                viewModel.deleteItems(listOf(item))
-                            },
-                            onMoveToCustomAlbum = { item, albumName, moveMode ->
-                                viewModel.assignItemsToAlbum(listOf(item), albumName, moveItems = moveMode)
-                            },
-                            onRenameItem = { item, newName ->
-                                viewModel.renameMedia(item, newName)
-                            },
-                            onSavePhotoDetails = { item, caption, tags, album ->
-                                viewModel.savePhotoDetails(item, caption, tags, album)
-                            },
-                            onExportExifReport = { item, exif ->
-                                shareExifTelemetryReport(context, item, exif)
-                            }
-                        )
-                    }
-
-                    GalleryDestination.Settings -> {
-                        SettingsScreen(
-                            preferences = uiState.preferences,
-                            totalMediaCount = uiState.allMedia.size,
-                            favoritesCount = uiState.favorites.size,
-                            onBack = {
-                                currentDestination = GalleryDestination.MainTab(lastTab)
-                            },
-                            onSelectTheme = { viewModel.setThemeOption(it) },
-                            onSelectGridDensity = { viewModel.setGridDensity(it) },
-                            onSelectSortOption = { viewModel.setSortOption(it) },
-                            onToggleShowVideos = { viewModel.setShowVideosInTimeline(it) },
-                            onToggleShowVideoDuration = { viewModel.setShowVideoDurationBadges(it) },
-                            onToggleShowMemories = { viewModel.setShowMemoriesSection(it) },
-                            onLaunchPhotoPicker = {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
-                            },
-                            onOpenPermissionsScreen = {
-                                currentDestination = GalleryDestination.StatesInspector
-                            }
-                        )
-                    }
-
-                    GalleryDestination.StatesInspector -> {
-                        PermissionAndStatesScreen(
-                            permissionAccessLevel = uiState.permissionAccessLevel,
-                            onRequestPermissions = {
-                                permissionLauncher.launch(viewModel.requiredPermissions)
-                            },
-                            onLaunchPhotoPicker = {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
-                            },
-                            onBack = {
-                                currentDestination = GalleryDestination.MainTab(lastTab)
-                            }
-                        )
-                    }
-
-                    is GalleryDestination.PhotoEditor -> {
-                        PhotoEditorScreen(
-                            uri = Uri.parse(dest.mediaUri),
-                            onNavigateBack = {
-                                currentDestination = GalleryDestination.PhotoViewer(dest.mediaUri)
-                            }
-                        )
-                    }
-
-                    is GalleryDestination.VideoEditor -> {
-                        VideoEditorScreen(
-                            uri = Uri.parse(dest.mediaUri),
-                            onNavigateBack = {
-                                currentDestination = GalleryDestination.PhotoViewer(dest.mediaUri)
-                            }
-                        )
-                    }
-
-                        GalleryDestination.RecycleBin -> {
-                            val recycleBinViewModel: com.example.viewmodel.RecycleBinViewModel = viewModel(
-                                factory = com.example.viewmodel.RecycleBinViewModel.Factory(
-                                    repository = viewModel.galleryRepository
-                                )
-                            )
-                            com.example.ui.screens.RecycleBinScreen(
-                                viewModel = recycleBinViewModel,
-                                onBack = {
-                                    currentDestination = GalleryDestination.MainTab(lastTab)
-                                },
-                                onOpenPhoto = { item ->
-                                    currentDestination = GalleryDestination.PhotoViewer(item.uri.toString())
-                                }
-                            )
+                            is GalleryDestination.MainTab -> { /* Should not happen with current logic */ }
                         }
                     }
                 }
@@ -587,11 +691,13 @@ fun GalleryApp(
                                 batchMoveMode = true
                                 showBatchAssignAlbum = true
                             },
-
                             onDeleteSelected = {
                                 if (uiState.selection.selectedUris.isNotEmpty()) {
                                     showBatchDeleteConfirm = true
                                 }
+                            },
+                            onRenameSelected = {
+                                showRenameDialog = true
                             }
                         )
                     }
@@ -605,8 +711,7 @@ fun GalleryApp(
                         PorcelainFloatingBottomBar(
                             currentTab = (currentDestination as? GalleryDestination.MainTab)?.tab ?: lastTab,
                             onSelectTab = { tab ->
-                                lastTab = tab
-                                currentDestination = GalleryDestination.MainTab(tab)
+                                navigateToTab(tab)
                             }
                         )
                     }
@@ -657,6 +762,22 @@ fun GalleryApp(
                 },
                 onDismiss = { showBatchAssignAlbum = false }
             )
+        }
+
+        if (showRenameDialog) {
+            val selected = viewModel.getSelectedMediaItems()
+            if (selected.size == 1) {
+                com.example.ui.components.RenameDialog(
+                    currentName = selected.first().displayName,
+                    onRename = { newName ->
+                        viewModel.renameMedia(selected.first(), newName)
+                        showRenameDialog = false
+                    },
+                    onDismiss = { showRenameDialog = false }
+                )
+            } else {
+                showRenameDialog = false
+            }
         }
     }
 }
@@ -753,4 +874,23 @@ private fun shareExifTelemetryReport(
         }
         context.startActivity(Intent.createChooser(intent, "Export EXIF Telemetry"))
     }
+}
+
+private fun createPlaceholderMediaItem(context: Context, uri: Uri): MediaItem {
+    val mimeType = context.contentResolver.getType(uri) ?: "image/jpeg"
+    val isVideo = mimeType.startsWith("video")
+    return MediaItem(
+        id = -1,
+        uri = uri,
+        displayName = uri.lastPathSegment ?: "External Media",
+        mimeType = mimeType,
+        isVideo = isVideo,
+        dateAddedMillis = System.currentTimeMillis(),
+        dateModifiedMillis = System.currentTimeMillis(),
+        dateTakenMillis = System.currentTimeMillis(),
+        sizeBytes = 0,
+        width = 0,
+        height = 0,
+        bucketDisplayName = "External"
+    )
 }
